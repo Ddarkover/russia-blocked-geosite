@@ -1,4 +1,5 @@
 name: build.yml
+
 on:
   workflow_dispatch:
   schedule:
@@ -9,32 +10,57 @@ on:
     paths-ignore:
       - "**/README.md"
 
+# Добавляем глобальные разрешения для безопасности
+permissions:
+  contents: write
+  actions: read
+
+env:
+  # Централизованное управление переменными окружения
+  ANTIFILTER_DOWNLOAD: "https://antifilter.download/list/domains.lst"
+  ANTIFILTER_DOWNLOAD_COMMUNITY: "https://community.antifilter.download/list/domains.lst"
+  REFILTER_ALL: "https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/domains_all.lst"
+  PETERLOWE_REJECT_URL: "https://pgl.yoyo.org/adservers/serverlist.php?hostformat=hosts&showintro=1&mimetype=plaintext"
+  ADGUARD_DNS_REJECT_URL: "https://adguardteam.github.io/AdGuardSDNSFilter/Filters/filter.txt"
+  WIN_SPY: "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/spy.txt"
+  WIN_UPDATE: "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/update.txt"
+  WIN_EXTRA: "https://raw.githubusercontent.com/crazy-max/WindowsSpyBlocker/master/data/hosts/extra.txt"
+  GFW: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/refs/heads/release/gfw.txt"
+  GREATFIRE: "https://raw.githubusercontent.com/Loyalsoldier/v2ray-rules-dat/refs/heads/release/greatfire.txt"
+
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # Устанавливаем таймаут для предотвращения зависших job'ов
+    timeout-minutes: 30
+    
     steps:
-      - name: Set variables
+      - name: Set release variables
         run: |
           echo "RELEASE_NAME=Released on $(date +%Y%m%d%H%M)" >> $GITHUB_ENV
           echo "TAG_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
-          echo "ANTIFILTER_DOWNLOAD=https://antifilter.download/list/domains.lst" >> $GITHUB_ENV
-          echo "ANTIFILTER_DOWNLOAD_COMMUNITY=https://community.antifilter.download/list/domains.lst" >> $GITHUB_ENV
-          echo "REFILTER_ALL=https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/domains_all.lst" >> $GITHUB_ENV
-        shell: bash
 
       - name: Checkout repositories
-        uses: actions/checkout@v4
-        with:
-          repository: runetfreedom/russia-domains-list
-          path: additional
-      - uses: actions/checkout@v4
-        with:
-          repository: runetfreedom/domain-list-custom
-          path: custom
-      - uses: actions/checkout@v4
-        with:
-          repository: v2fly/domain-list-community
-          path: community
+        run: |
+          # Создаем необходимые директории
+          mkdir -p {additional,custom,community}
+          
+          # Клонируем репозитории параллельно для ускорения
+          git clone --depth=1 https://github.com/runetfreedom/russia-domains-list.git additional &
+          git clone --depth=1 https://github.com/runetfreedom/domain-list-custom.git custom &
+          git clone --depth=1 https://github.com/v2fly/domain-list-community.git community &
+          
+          # Ждем завершения всех операций клонирования
+          wait
+          
+          # Проверяем успешность клонирования
+          for dir in additional custom community; do
+            if [ ! -d "$dir/.git" ]; then
+              echo "Error: Failed to clone $dir repository"
+              exit 1
+            fi
+          done
 
       - name: Setup Go
         uses: actions/setup-go@v5
@@ -42,31 +68,207 @@ jobs:
           go-version-file: ./custom/go.mod
           cache-dependency-path: ./custom/go.sum
 
-      - name: Get and add domain lists in parallel
+      - name: Download and process domain lists
         run: |
-          curl -sSL $ANTIFILTER_DOWNLOAD > ./antifilter-download.txt &
-          curl -sSL $ANTIFILTER_DOWNLOAD_COMMUNITY > ./antifilter-download-community.txt &
-          curl -sSL $REFILTER_ALL > ./refilter.txt &
-          wait
+          # Функция для безопасной загрузки с повторными попытками
+          download_with_retry() {
+            local url="$1"
+            local output="$2"
+            local max_attempts=3
+            local attempt=1
+            
+            while [ $attempt -le $max_attempts ]; do
+              echo "Downloading $url (attempt $attempt/$max_attempts)"
+              if curl -sSL --fail --max-time 30 "$url" > "$output"; then
+                echo "Successfully downloaded $url"
+                return 0
+              else
+                echo "Failed to download $url (attempt $attempt)"
+                [ $attempt -lt $max_attempts ] && sleep 10
+                ((attempt++))
+              fi
+            done
+            
+            echo "Error: Failed to download $url after $max_attempts attempts"
+            return 1
+          }
           
-          cp {antifilter-download,antifilter-download-community,refilter}.txt ./community/data/
-          for f in ./community/data/*.txt; do mv "$f" "${f//.txt/}"; done
-          mv ./additional/* ./community/data/
+          # Загружаем файлы с обработкой ошибок
+          download_with_retry "$ANTIFILTER_DOWNLOAD" "./antifilter-download.txt" || exit 1
+          download_with_retry "$ANTIFILTER_DOWNLOAD_COMMUNITY" "./antifilter-download-community.txt" || exit 1
+          download_with_retry "$REFILTER_ALL" "./refilter.txt" || exit 1
+          
+          # Обрабатываем Windows списки с улучшенной фильтрацией
+          download_with_retry "$WIN_SPY" "/tmp/win-spy-raw.txt" || exit 1
+          download_with_retry "$WIN_UPDATE" "/tmp/win-update-raw.txt" || exit 1
+          download_with_retry "$WIN_EXTRA" "/tmp/win-extra-raw.txt" || exit 1
+          
+          # Более надежная обработка hosts файлов
+          process_hosts_file() {
+            local input="$1"
+            local output="$2"
+            grep "^0\.0\.0\.0" "$input" | awk '{print $2}' | grep -v "^$" | sort -u > "$output"
+          }
+          
+          process_hosts_file "/tmp/win-spy-raw.txt" "./win-spy.txt"
+          process_hosts_file "/tmp/win-update-raw.txt" "./win-update.txt"
+          process_hosts_file "/tmp/win-extra-raw.txt" "./win-extra.txt"
+          
+          # Загружаем GFW и Greatfire списки
+          download_with_retry "$GFW" "./community/data/gfw.txt" || exit 1
+          download_with_retry "$GREATFIRE" "./community/data/greatfire.txt" || exit 1
 
-      - name: Build geosite.dat file
+      - name: Prepare community data
         run: |
-          cd custom || exit 1
-          go run ./ --exportlists= --datname=geosite-ru-only.dat --togfwlist=ru-blocked --datapath=../community/data
-          go run ./ --exportlists=ru-blocked --datapath=../community/data
+          # Копируем файлы в community/data с проверкой
+          for file in antifilter-download antifilter-download-community refilter win-spy win-update win-extra; do
+            if [ -f "./${file}.txt" ]; then
+              cp "./${file}.txt" "./community/data/${file}"
+              echo "Copied ${file}.txt -> ./community/data/${file}"
+            else
+              echo "Warning: ${file}.txt not found"
+            fi
+          done
+          
+          # Очищаем README.md и копируем дополнительные данные
+          if [ -f "./additional/README.md" ]; then
+            rm -f "./additional/README.md"
+          fi
+          
+          # Копируем файлы из additional, исключая .git директорию
+          find ./additional -type f -not -path "*/.git/*" -exec cp {} ./community/data/ \;
 
-      - name: Move files and generate sha256 hash
+      - name: Build ad block list
         run: |
+          # Создаем временный файл для ad блокировки
+          temp_file=$(mktemp)
+          
+          # Обрабатываем AdGuard DNS список
+          if curl -sSL --fail "$ADGUARD_DNS_REJECT_URL" | \
+             perl -ne '/^\|\|([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})\^$/ && print "$1\n"' | \
+             perl -ne 'print if not /^[0-9]{1,3}(\.[0-9]{1,3}){3}$/' > "$temp_file"; then
+            echo "Successfully processed AdGuard DNS list"
+          else
+            echo "Error processing AdGuard DNS list"
+            exit 1
+          fi
+          
+          # Обрабатываем Peter Lowe список
+          if curl -sSL --fail "$PETERLOWE_REJECT_URL" | \
+             perl -ne '/^127\.0\.0\.1\s([-_0-9a-zA-Z]+(\.[-_0-9a-zA-Z]+){1,64})$/ && print "$1\n"' >> "$temp_file"; then
+            echo "Successfully processed Peter Lowe list"
+          else
+            echo "Error processing Peter Lowe list"
+            exit 1
+          fi
+          
+          # Удаляем t.co и создаем финальный список
+          grep -v "t\.co" "$temp_file" | sort --ignore-case -u > ./community/data/category-ads-all
+          rm -f "$temp_file"
+          
+          echo "Created ad block list with $(wc -l < ./community/data/category-ads-all) entries"
+
+      - name: Build Russia blocked lists
+        run: |
+          # Создаем общий заблокированный список
+          cat > ./community/data/ru-blocked << 'EOF'
+include:antifilter-download-community
+include:refilter
+EOF
+          
+          # Создаем расширенный заблокированный список
+          cat > ./community/data/ru-blocked-all << 'EOF'
+include:antifilter-download
+include:antifilter-download-community
+include:refilter
+EOF
+          
+          echo "Created Russia blocked lists"
+
+      - name: Build Russia-only dataset
+        run: |
+          # Создаем директорию для RU-специфичных данных
+          mkdir -p ./community/data-ru
+          
+          # Копируем необходимые файлы
+          cp ./community/data/category-ads-all ./community/data-ru/
+          
+          # Копируем дополнительные файлы если они существуют
+          for file in private ru-available-only-inside category-gov-ru; do
+            if [ -f "./community/data/$file" ]; then
+              cp "./community/data/$file" "./community/data-ru/"
+              echo "Copied $file to data-ru"
+            else
+              echo "Warning: $file not found, skipping"
+            fi
+          done
+          
+          # Объединяем российские списки блокировки
+          if [ -f "./community/data/antifilter-download-community" ] && [ -f "./community/data/refilter" ]; then
+            cat ./community/data/antifilter-download-community ./community/data/refilter | \
+            sort --ignore-case -u > ./community/data-ru/ru-blocked
+            echo "Created consolidated ru-blocked list with $(wc -l < ./community/data-ru/ru-blocked) entries"
+          else
+            echo "Error: Required files for ru-blocked not found"
+            exit 1
+          fi
+
+      - name: Build geosite.dat files
+        run: |
+          cd custom || { echo "Error: custom directory not found"; exit 1; }
+          
+          # Собираем RU-специфичную версию
+          echo "Building geosite-ru-only.dat..."
+          if ! go run ./ --exportlists= --datname=geosite-ru-only.dat --togfwlist=ru-blocked --datapath=../community/data-ru; then
+            echo "Error: Failed to build geosite-ru-only.dat"
+            exit 1
+          fi
+          
+          # Собираем полную версию
+          echo "Building geosite.dat..."
+          if ! go run ./ --exportlists=category-ads-all,google,youtube,discord,ru-blocked,ru-blocked-all,private --datapath=../community/data; then
+            echo "Error: Failed to build geosite.dat"
+            exit 1
+          fi
+          
+          echo "Successfully built geosite files"
+
+      - name: Prepare release files
+        run: |
+          # Создаем директорию для публикации
           mkdir -p ./publish
-          cp ./custom/publish/*.dat ./publish/
-          cp {antifilter-download,antifilter-download-community,refilter}.txt ./publish/
-          sha256sum ./publish/geosite.dat > ./publish/geosite.dat.sha256sum
+          
+          # Копируем основные файлы
+          install -Dp ./custom/publish/geosite-ru-only.dat ./publish/geosite-ru-only.dat
+          install -Dp ./custom/publish/geosite.dat ./publish/geosite.dat
+          
+          # Копируем текстовые файлы
+          for file in antifilter-download antifilter-download-community refilter win-spy win-update win-extra; do
+            if [ -f "./${file}.txt" ]; then
+              install -p "./${file}.txt" "./publish/"
+            else
+              echo "Warning: ${file}.txt not found for publishing"
+            fi
+          done
+          
+          # Копируем экспортированные списки
+          for file in ru-blocked ru-blocked-all discord youtube google private category-ads-all; do
+            if [ -f "./custom/publish/${file}.txt" ]; then
+              install -p "./custom/publish/${file}.txt" "./publish/"
+            else
+              echo "Warning: ${file}.txt not found in custom/publish"
+            fi
+          done
+          
+          # Генерируем контрольные суммы
+          cd ./publish
+          sha256sum geosite.dat > geosite.dat.sha256sum
+          sha256sum geosite-ru-only.dat > geosite-ru-only.dat.sha256sum
+          
+          echo "Release files prepared:"
+          ls -la
 
-      - name: Release and upload assets
+      - name: Create release and upload assets
         uses: svenstaro/upload-release-action@v2
         with:
           repo_token: ${{ secrets.GITHUB_TOKEN }}
@@ -74,3 +276,29 @@ jobs:
           tag: ${{ env.TAG_NAME }}
           file_glob: true
           file: ./publish/*
+          overwrite: true
+          make_latest: true
+
+      - name: Push to release branch
+        run: |
+          cd publish || { echo "Error: publish directory not found"; exit 1; }
+          
+          # Инициализируем git репозиторий
+          git init
+          git config --local user.name "github-actions[bot]"
+          git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          
+          # Создаем коммит
+          git checkout -b release
+          git add .
+          git commit -m "${{ env.RELEASE_NAME }}"
+          
+          # Пушим с обработкой ошибок
+          git remote add origin "https://${{ github.actor }}:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}"
+          
+          if ! git push -f -u origin release; then
+            echo "Error: Failed to push to release branch"
+            exit 1
+          fi
+          
+          echo "Successfully pushed to release branch"
