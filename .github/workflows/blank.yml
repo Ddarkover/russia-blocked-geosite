@@ -1,0 +1,76 @@
+name: build.yml
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 3,9,15,21 * * *"
+  push:
+    branches:
+      - master
+    paths-ignore:
+      - "**/README.md"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set variables
+        run: |
+          echo "RELEASE_NAME=Released on $(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+          echo "TAG_NAME=$(date +%Y%m%d%H%M)" >> $GITHUB_ENV
+          echo "ANTIFILTER_DOWNLOAD=https://antifilter.download/list/domains.lst" >> $GITHUB_ENV
+          echo "ANTIFILTER_DOWNLOAD_COMMUNITY=https://community.antifilter.download/list/domains.lst" >> $GITHUB_ENV
+          echo "REFILTER_ALL=https://raw.githubusercontent.com/1andrevich/Re-filter-lists/refs/heads/main/domains_all.lst" >> $GITHUB_ENV
+        shell: bash
+
+      - name: Checkout repositories
+        uses: actions/checkout@v4
+        with:
+          repository: runetfreedom/russia-domains-list
+          path: additional
+      - uses: actions/checkout@v4
+        with:
+          repository: runetfreedom/domain-list-custom
+          path: custom
+      - uses: actions/checkout@v4
+        with:
+          repository: v2fly/domain-list-community
+          path: community
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: ./custom/go.mod
+          cache-dependency-path: ./custom/go.sum
+
+      - name: Get and add domain lists in parallel
+        run: |
+          curl -sSL $ANTIFILTER_DOWNLOAD > ./antifilter-download.txt &
+          curl -sSL $ANTIFILTER_DOWNLOAD_COMMUNITY > ./antifilter-download-community.txt &
+          curl -sSL $REFILTER_ALL > ./refilter.txt &
+          wait
+          
+          cp {antifilter-download,antifilter-download-community,refilter}.txt ./community/data/
+          for f in ./community/data/*.txt; do mv "$f" "${f//.txt/}"; done
+          mv ./additional/* ./community/data/
+
+      - name: Build geosite.dat file
+        run: |
+          cd custom || exit 1
+          go run ./ --exportlists= --datname=geosite-ru-only.dat --togfwlist=ru-blocked --datapath=../community/data
+          go run ./ --exportlists=ru-blocked --datapath=../community/data
+
+      - name: Move files and generate sha256 hash
+        run: |
+          mkdir -p ./publish
+          cp ./custom/publish/*.dat ./publish/
+          cp {antifilter-download,antifilter-download-community,refilter}.txt ./publish/
+          sha256sum ./publish/geosite.dat > ./publish/geosite.dat.sha256sum
+
+      - name: Release and upload assets
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          release_name: ${{ env.RELEASE_NAME }}
+          tag: ${{ env.TAG_NAME }}
+          file_glob: true
+          file: ./publish/*
