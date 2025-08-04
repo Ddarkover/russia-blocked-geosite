@@ -49,7 +49,7 @@ jobs:
         run: |
           echo "release_name=Released on $(date +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
           echo "tag_name=$(date +%Y%m%d%H%M)" >> $GITHUB_OUTPUT
-          echo "timestamp=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "timestamp=$(date -u '+%d.%m.%Y %H:%M UTC')" >> $GITHUB_OUTPUT
 
       - name: Checkout repositories
         uses: actions/checkout@v4
@@ -74,7 +74,7 @@ jobs:
 
       - name: Create necessary directories
         run: |
-          mkdir -p {temp,publish,community/data-ru}
+          mkdir -p {temp,publish,community/data-ru,stats}
 
       - name: Download domain lists
         run: |
@@ -188,6 +188,62 @@ jobs:
           # Создаем объединенный список заблокированных доменов
           cat ./community/data/{antifilter-download-community,refilter} | sort -u > ./community/data-ru/ru-blocked
 
+      - name: Generate domain statistics
+        id: stats
+        run: |
+          # Подсчитываем статистику по источникам
+          echo "Collecting domain statistics..."
+          
+          # Функция для подсчета уникальных доменов в файле
+          count_domains() {
+            local file=$1
+            if [[ -f "$file" ]]; then
+              grep -v "^#" "$file" 2>/dev/null | grep -v "^$" | sort -u | wc -l
+            else
+              echo "0"
+            fi
+          }
+          
+          # Подсчитываем статистику по каждому источнику
+          antifilter_count=$(count_domains "./temp/antifilter-download.txt")
+          antifilter_community_count=$(count_domains "./temp/antifilter-download-community.txt")
+          refilter_count=$(count_domains "./temp/refilter.txt")
+          ads_count=$(count_domains "./community/data/category-ads-all")
+          win_spy_count=$(count_domains "./temp/win-spy.txt")
+          win_update_count=$(count_domains "./temp/win-update.txt")
+          win_extra_count=$(count_domains "./temp/win-extra.txt")
+          gfw_count=$(count_domains "./temp/gfw.txt")
+          greatfire_count=$(count_domains "./temp/greatfire.txt")
+          
+          # Подсчитываем общее количество уникальных доменов
+          cat ./temp/{antifilter-download,antifilter-download-community,refilter,win-spy,win-update,win-extra,gfw,greatfire}.txt ./community/data/category-ads-all 2>/dev/null | \
+            grep -v "^#" | grep -v "^$" | sort -u > ./stats/all_domains.txt
+          total_domains=$(wc -l < ./stats/all_domains.txt)
+          
+          # Сохраняем статистику
+          cat > ./stats/statistics.txt << EOF
+          Antifilter (основной): ${antifilter_count}
+          Antifilter (community): ${antifilter_community_count}
+          Re-filter: ${refilter_count}
+          Блокировка рекламы: ${ads_count}
+          Windows Spy: ${win_spy_count}
+          Windows Update: ${win_update_count}
+          Windows Extra: ${win_extra_count}
+          GFW: ${gfw_count}
+          GreatFire: ${greatfire_count}
+          Общее количество доменов: ${total_domains}
+          EOF
+          
+          # Экспортируем переменные для использования в релизе
+          echo "total_domains=${total_domains}" >> $GITHUB_OUTPUT
+          echo "antifilter_count=${antifilter_count}" >> $GITHUB_OUTPUT
+          echo "antifilter_community_count=${antifilter_community_count}" >> $GITHUB_OUTPUT
+          echo "refilter_count=${refilter_count}" >> $GITHUB_OUTPUT
+          echo "ads_count=${ads_count}" >> $GITHUB_OUTPUT
+          
+          echo "Statistics generated successfully"
+          cat ./stats/statistics.txt
+
       - name: Build geosite files
         run: |
           cd custom
@@ -216,6 +272,9 @@ jobs:
           # Копируем экспортированные списки
           find ./custom/publish -name "*.txt" -exec cp {} ./publish/ \;
           
+          # Копируем статистику
+          cp ./stats/statistics.txt ./publish/
+          
           # Генерируем хеши
           cd ./publish
           for file in *.dat; do
@@ -236,22 +295,23 @@ jobs:
           name: ${{ steps.vars.outputs.release_name }}
           tag_name: ${{ steps.vars.outputs.tag_name }}
           body: |
-            Автоматическая сборка geosite списков
+            **Дата и время сборки:** ${{ steps.vars.outputs.timestamp }}
+            **Версия релиза:** ${{ steps.vars.outputs.tag_name }}
             
-            **Время сборки:** ${{ steps.vars.outputs.timestamp }}
+            ### Изменения с предыдущего релиза
+            - Общее количество доменов в geosite.dat: ${{ steps.stats.outputs.total_domains }}
             
-            **Включенные файлы:**
-            - `geosite.dat` - Полная версия со всеми списками
-            - `geosite-ru-only.dat` - Версия только с российскими данными
-            - Текстовые списки доменов для ручного использования
-            
-            **Источники данных:**
-            - Antifilter (основной и community)
+            ### Источники данных
+            - Antifilter (основной список и community)
             - Re-filter lists
             - AdGuard DNS Filter
             - Peter Lowe's Ad and tracking server list
-            - Windows Spy Blocker
+            - Windows Spy Blocker (Spy/Update/Extra)
             - GFW и GreatFire списки
+            - Дополнительные российские списки доменов
+            
+            ---
+            *Примечание: Автоматически сгенерировано GitHub Actions*
           files: ./publish/*
           draft: false
           prerelease: false
