@@ -60,8 +60,8 @@ jobs:
       - name: Checkout additional repositories
         run: |
           # Клонируем все необходимые репозитории параллельно
-          git clone --depth=1 https://github.com/runetfreedom/russia-domains-list.git additional &
-          git clone --depth=1 https://github.com/runetfreedom/domain-list-custom.git custom &
+          git clone --depth=1 https://github.com/Ddarkover/russia-domains-list.git additional &
+          git clone --depth=1 https://github.com/Ddarkover/domain-list-custom.git custom &
           git clone --depth=1 https://github.com/v2fly/domain-list-community.git community &
           wait
 
