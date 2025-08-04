@@ -47,9 +47,9 @@ jobs:
       - name: Set dynamic variables
         id: vars
         run: |
-          echo "release_name=Geosite $(TZ=Europe/Moscow date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
-          echo "tag_name=v$(TZ=Europe/Moscow date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
-          echo "timestamp=$(TZ=Europe/Moscow date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
+          echo "release_name=Geosite $(TZ='Europe/Moscow' date +%Y.%m.%d-%H%M)" >> $GITHUB_OUTPUT
+          echo "tag_name=v$(TZ='Europe/Moscow' date +%Y%m%d-%H%M)" >> $GITHUB_OUTPUT
+          echo "timestamp=$(TZ='Europe/Moscow' date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_OUTPUT
 
       - name: Checkout repositories
         uses: actions/checkout@v4
