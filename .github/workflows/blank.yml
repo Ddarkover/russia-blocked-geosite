@@ -204,31 +204,6 @@ jobs:
             --exportlists=category-ads-all,google,youtube,discord,ru-blocked,ru-blocked-all,private \
             --datapath=../community/data
 
-      - name: Calculate statistics
-        id: stats
-        run: |
-          # Подсчитываем общее количество доменов в основных списках
-          total_domains=0
-          
-          # Считаем домены из основных источников
-          for file in antifilter-download antifilter-download-community refilter win-spy win-update win-extra gfw greatfire; do
-            if [[ -f "./temp/${file}.txt" ]]; then
-              count=$(wc -l < "./temp/${file}.txt" 2>/dev/null || echo "0")
-              total_domains=$((total_domains + count))
-              echo "Domains in ${file}: $count"
-            fi
-          done
-          
-          # Считаем рекламные домены
-          if [[ -f "./community/data/category-ads-all" ]]; then
-            ads_count=$(wc -l < "./community/data/category-ads-all" 2>/dev/null || echo "0")
-            total_domains=$((total_domains + ads_count))
-            echo "Ad blocking domains: $ads_count"
-          fi
-          
-          echo "Total domains calculated: $total_domains"
-          echo "total_domains=$total_domains" >> $GITHUB_OUTPUT
-
       - name: Prepare release files
         run: |
           # Копируем собранные .dat файлы
@@ -263,7 +238,6 @@ jobs:
           body: |
             **Дата и время сборки:** ${{ steps.vars.outputs.timestamp }}
             **Версия релиза:** ${{ steps.vars.outputs.tag_name }}
-            **Общее количество доменов в geosite.dat:** ${{ steps.stats.outputs.total_domains }}
           files: ./publish/*
           draft: false
           prerelease: false
